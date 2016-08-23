@@ -24,6 +24,7 @@
 #include "algorithm/groestlcoin.h"
 #include "algorithm/twecoin.h"
 #include "algorithm/sibcoin.h"
+#include "algorithm/veltor.h"
 #include "algorithm/marucoin.h"
 #include "algorithm/maxcoin.h"
 #include "algorithm/talkcoin.h"
@@ -1159,6 +1160,7 @@ static algorithm_settings_t algos[] = {
   { a, ALGO_X11, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 0, 0, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, b, NULL, NULL, queue_sph_kernel, gen_hash, append_x11_compiler_options }
   A_DARK("darkcoin", darkcoin_regenhash),
   A_DARK("sibcoin", sibcoin_regenhash),
+  A_DARK("veltor", veltor_regenhash),
   A_DARK("inkcoin", inkcoin_regenhash),
   A_DARK("myriadcoin-groestl", myriadcoin_groestl_regenhash),
 #undef A_DARK
