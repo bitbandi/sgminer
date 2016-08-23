@@ -87,6 +87,26 @@ static void veltorhash(void *state, const void *input)
 
 static const uint32_t diff1targ = 0x0000ffff;
 
+void veltor_midstate(struct work *work)
+{
+  sph_skein512_context ctx_skein;
+  uint64_t *midstate = (uint64_t *)work->midstate;
+  uint32_t data[16];
+
+  be32enc_vect(data, (const uint32_t *)work->data, 20);
+
+  sph_skein512_init(&ctx_skein);
+  sph_skein512 (&ctx_skein, data, 80);
+
+  midstate[0] = ctx_skein.h0;
+  midstate[1] = ctx_skein.h1;
+  midstate[2] = ctx_skein.h2;
+  midstate[3] = ctx_skein.h3;
+  midstate[4] = ctx_skein.h4;
+  midstate[5] = ctx_skein.h5;
+  midstate[6] = ctx_skein.h6;
+  midstate[7] = ctx_skein.h7;
+}
 
 /* Used externally as confirmation of correct OCL code */
 int veltor_test(unsigned char *pdata, const unsigned char *ptarget, uint32_t nonce)
