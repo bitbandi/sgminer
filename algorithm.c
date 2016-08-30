@@ -1039,8 +1039,20 @@ static cl_int queue_veltor_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_u
   status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, 80, clState->cldata, 0, NULL, NULL);
   status |= clEnqueueWriteBuffer(clState->commandQueue, clState->buffer1, CL_TRUE, 0, 64, blk->work->midstate, 0, NULL, NULL);
 
+  // skein - search
+  kernel = &clState->kernel;
+  num = 0;
   CL_SET_ARG(clState->CLbuffer0);
   CL_SET_ARG(clState->buffer1);
+  CL_SET_ARG(clState->padbuffer8);
+  // shavite - search1
+  kernel = clState->extra_kernels;
+  CL_SET_ARG_0(clState->padbuffer8);
+  // shabal - search2
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  // gost - search11
+  num = 0;
+  CL_NEXTKERNEL_SET_ARG(clState->padbuffer8);
   CL_SET_ARG(clState->outputBuffer);
   CL_SET_ARG(le_target);
 
@@ -1185,7 +1197,7 @@ static algorithm_settings_t algos[] = {
   A_DARK("myriadcoin-groestl", myriadcoin_groestl_regenhash),
 #undef A_DARK
 
-  { "veltor", ALGO_X11, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 0, 64, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, veltor_regenhash, veltor_midstate, NULL, queue_veltor_kernel, gen_hash, append_x11_compiler_options },
+  { "veltor", ALGO_X11, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 3, 3 * 16 * 4194304, 0, veltor_regenhash, veltor_midstate, NULL, queue_veltor_kernel, gen_hash, append_x11_compiler_options },
   { "twecoin", ALGO_TWE, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 0, 0, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, twecoin_regenhash, NULL, NULL, queue_sph_kernel, sha256, NULL },
   { "maxcoin", ALGO_KECCAK, "", 1, 256, 1, 4, 15, 0x0F, 0xFFFFULL, 0x000000ffUL, 0, 0, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, maxcoin_regenhash, NULL, NULL, queue_maxcoin_kernel, sha256, NULL },
 
