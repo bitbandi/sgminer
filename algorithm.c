@@ -44,6 +44,7 @@
 #include "algorithm/pascal.h"
 #include "algorithm/lbry.h"
 #include "algorithm/sibcoin.h"
+#include "algorithm/timetravel10.h"
 
 #include "compat.h"
 
@@ -438,6 +439,66 @@ static cl_int queue_darkcoin_mod_kernel(struct __clState *clState, struct _dev_b
   CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
   // echo - search10
   num = 0;
+  CL_NEXTKERNEL_SET_ARG(clState->padbuffer8);
+  CL_SET_ARG(clState->outputBuffer);
+  CL_SET_ARG(le_target);
+
+  return status;
+}
+
+
+static cl_int queue_timetravel10_kernel(struct __clState *clState, struct _dev_blk_ctx *blk, __maybe_unused cl_uint threads)
+{
+  cl_kernel *kernel;
+  unsigned int num;
+  cl_ulong le_target;
+  cl_int status = 0;
+  static THREADLOCAL char s_ntime[12] = "00000000";
+
+  le_target = *(cl_ulong *)(blk->work->device_target + 24);
+  flip80(clState->cldata, blk->work->data);
+  status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, 80, clState->cldata, 0, NULL,NULL);
+
+  if (strcmp(s_ntime, blk->work->pool->swork.ntime)) {
+    unsigned int i;
+    char kernel_name[9]; // max: search99 + 0x0
+    uint32_t ntime;
+
+    hex2bin((unsigned char *)&ntime, blk->work->pool->swork.ntime, 4);
+    uint32_t permutation = timetravel_permutations[(be32toh(ntime) - TIMETRAVEL10_BASE_TIMESTAMP) % TIMETRAVEL10_COUNT_PERMUTATIONS];
+
+    // blake + bmw hardcoded
+    for (i = 0; i < clState->n_extra_kernels - 2; i++) {
+        clReleaseKernel(clState->extra_kernels[i + 1]);
+        snprintf(kernel_name, 9, "%s%d", "search", ((permutation >> (i * 4)) & 0xf) + 2);
+        clState->extra_kernels[i + 1] = clCreateKernel(clState->program, kernel_name, &status);
+        if (status != CL_SUCCESS) {
+            applog(LOG_ERR, "Error %d: Creating ExtraKernel #%d from program. (clCreateKernel)", status, i);
+            return status;
+        }
+    }
+    strcpy(s_ntime, blk->work->pool->swork.ntime);
+  }
+
+  // blake - search
+  kernel = &clState->kernel;
+  num = 0;
+  CL_SET_ARG(clState->CLbuffer0);
+  CL_SET_ARG(clState->padbuffer8);
+  // bmw - search1
+  kernel = clState->extra_kernels;
+  CL_SET_ARG_0(clState->padbuffer8);
+  // search2 .. 9
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  CL_NEXTKERNEL_SET_ARG_0(clState->padbuffer8);
+  num = 0;
+  // hashcheck - search10
   CL_NEXTKERNEL_SET_ARG(clState->padbuffer8);
   CL_SET_ARG(clState->outputBuffer);
   CL_SET_ARG(le_target);
@@ -1190,6 +1251,8 @@ static algorithm_settings_t algos[] = {
   { "maxcoin", ALGO_KECCAK, "", 1, 256, 1, 4, 15, 0x0F, 0xFFFFULL, 0x000000ffUL, 0, 0, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, maxcoin_regenhash, NULL, NULL, queue_maxcoin_kernel, sha256, NULL },
 
   { "darkcoin-mod", ALGO_X11, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 10, 8 * 16 * 4194304, 0, darkcoin_regenhash, NULL, NULL, queue_darkcoin_mod_kernel, gen_hash, append_x11_compiler_options },
+
+  { "timetravel10", ALGO_TIMETRAVEL10, "", 1, 256, 256, 0, 0, 0xFF, 0xFFFFULL, 0x00ffffffUL, 10, 8 * 16 * 4194304, 0, timetravel10_regenhash, NULL, NULL, queue_timetravel10_kernel, gen_hash, append_x11_compiler_options },
 
   { "sibcoin-mod", ALGO_X11, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 11, 2 * 16 * 4194304, 0, sibcoin_regenhash, NULL, NULL, queue_sibcoin_mod_kernel, gen_hash, append_x11_compiler_options },
   
