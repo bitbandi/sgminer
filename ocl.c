@@ -891,6 +891,11 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
     applog(LOG_ERR, "Error %d: clCreateBuffer (CLbuffer0)", status);
     return NULL;
   }
+  clState->MidstateBuf = clCreateBuffer(clState->context, CL_MEM_READ_ONLY, 64, NULL, &status);
+  if (status != CL_SUCCESS) {
+    applog(LOG_ERR, "Error %d: clCreateBuffer (MidstateBuf)", status);
+    return NULL;
+  }
 
   applog(LOG_DEBUG, "Using output buffer sized %lu", BUFFERSIZE);
   clState->outputBuffer = clCreateBuffer(clState->context, CL_MEM_WRITE_ONLY, BUFFERSIZE, NULL, &status);

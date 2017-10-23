@@ -458,11 +458,13 @@ static cl_int queue_phi_kernel(struct __clState *clState, struct _dev_blk_ctx *b
   le_target = *(cl_ulong *)(blk->work->device_target + 24);
   flip80(clState->cldata, blk->work->data);
   status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, 80, clState->cldata, 0, NULL, NULL);
+  status |= clEnqueueWriteBuffer(clState->commandQueue, clState->MidstateBuf, true, 0, sizeof(cl_ulong) * 8, blk->work->midstate, 0, NULL, NULL);
 
   // skein - search
   kernel = &clState->kernel;
   num = 0;
   CL_SET_ARG(clState->CLbuffer0);
+  CL_SET_ARG(clState->MidstateBuf);
   CL_SET_ARG(clState->padbuffer8);
   // jh - search1
   kernel = clState->extra_kernels;
@@ -1242,7 +1244,7 @@ static algorithm_settings_t algos[] = {
 
   { "talkcoin-mod", ALGO_NIST, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 4, 8 * 16 * 4194304, 0, talkcoin_regenhash, NULL, NULL, queue_talkcoin_mod_kernel, gen_hash, append_x11_compiler_options },
 
-  { "phi", ALGO_PHI, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 5, 8 * 16 * 4194304, 0, phi_regenhash, NULL, NULL, queue_phi_kernel, gen_hash, append_x11_compiler_options },
+  { "phi", ALGO_PHI, "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 5, 8 * 16 * 4194304, 0, phi_regenhash, phi_midstate, phi_prepare_work, queue_phi_kernel, gen_hash, append_x11_compiler_options },
 
   { "fresh", ALGO_FRESH, "", 1, 256, 256, 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 4, 4 * 16 * 4194304, 0, fresh_regenhash, NULL, NULL, queue_fresh_kernel, gen_hash, NULL },
 
