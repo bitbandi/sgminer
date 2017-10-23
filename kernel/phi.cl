@@ -594,9 +594,9 @@ __kernel void search5(__global hash_t* hashes, __global uint* output, const ulon
     BigMixColumns(W);
   }
 
-  vstore4(vload4(1, hash->h4) ^ W[1] ^ W[9] ^ (uint4)(512, 0, 0, 0), 1, hash->h4);
+  ulong h8 = hash->h8[3] ^ as_ulong(W[1].hi) ^ as_ulong(W[9].hi);
 
-  bool result = (hash->h8[3] <= target);
+  bool result = (h8 <= target);
 
   if (result)
       output[atomic_inc(output+0xFF)] = gid;
