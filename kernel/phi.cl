@@ -60,12 +60,26 @@ typedef int sph_s32;
 #define SPH_JH_64 1
 #define SPH_CUBEHASH_UNROLL 0
 
-#include "skein.cl"
-#include "jh.cl"
-#include "cubehash.cl"
-#include "fugue.cl"
+#pragma OPENCL EXTENSION cl_amd_media_ops : enable
+
+#define VSWAP8(x)       (((x) >> 56) | (((x) >> 40) & 0x000000000000FF00UL) | (((x) >> 24) & 0x0000000000FF0000UL) \
+          | (((x) >>  8) & 0x00000000FF000000UL) | (((x) <<  8) & 0x000000FF00000000UL) \
+          | (((x) << 24) & 0x0000FF0000000000UL) | (((x) << 40) & 0x00FF000000000000UL) | (((x) << 56) & 0xFF00000000000000UL))
+
+#define VSWAP4(x)       (((x) >> 24) | (((x) << 8) & 0x00FF0000) | (((x) >> 8) & 0x0000FF00) | (((x) << 24)))
+
+ulong FAST_ROTL64_LO(const uint2 x, const uint y) { return(as_ulong(amd_bitalign(x, x.s10, 32 - y))); }
+ulong FAST_ROTL64_HI(const uint2 x, const uint y) { return(as_ulong(amd_bitalign(x.s10, x, 32 - (y - 32)))); }
+
+#define WOLF_JH_64BIT 1
+
+#include "wolf-skein.cl"
+#include "wolf-aes.cl"
+#include "wolf-jh.cl"
+#include "wolf-cubehash.cl"
+#include "wolf-fugue.cl"
 #include "gost-mod.cl"
-#include "echo.cl"
+#include "wolf-echo.cl"
 
 #define SWAP4(x) as_uint(as_uchar4(x).wzyx)
 #define SWAP8(x) as_ulong(as_uchar8(x).s76543210)
@@ -92,157 +106,41 @@ typedef union {
 #define SWAP8_USELESS(x) x
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search(__global unsigned char* block, __global hash_t* hashes)
+__kernel void search(__global ulong* block, __global hash_t* hashes)
 {
   uint gid = get_global_id(0);
   __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
 
   // input skein 80
 
-  sph_u64 M0, M1, M2, M3, M4, M5, M6, M7;
-  sph_u64 M8, M9;
+  ulong8 m = vload8(0, block);
 
-  M0 = DEC64LE(block + 0);
-  M1 = DEC64LE(block + 8);
-  M2 = DEC64LE(block + 16);
-  M3 = DEC64LE(block + 24);
-  M4 = DEC64LE(block + 32);
-  M5 = DEC64LE(block + 40);
-  M6 = DEC64LE(block + 48);
-  M7 = DEC64LE(block + 56);
-  M8 = DEC64LE(block + 64);
-  M9 = DEC64LE(block + 72);
-  ((uint*)&M9)[1] = SWAP4(gid);
+  ulong8 h = (ulong8)(  0x4903ADFF749C51CEUL, 0x0D95DE399746DF03UL, 0x8FD1934127C79BCEUL, 0x9A255629FF352CB1UL,
+                0x5DB62599DF6CA7B0UL, 0xEABE394CA9D5C3F4UL, 0x991112C71A75B523UL, 0xAE18A40B660FCC33UL);
 
-  sph_u64 h0 = SPH_C64(0x4903ADFF749C51CE);
-  sph_u64 h1 = SPH_C64(0x0D95DE399746DF03);
-  sph_u64 h2 = SPH_C64(0x8FD1934127C79BCE);
-  sph_u64 h3 = SPH_C64(0x9A255629FF352CB1);
-  sph_u64 h4 = SPH_C64(0x5DB62599DF6CA7B0);
-  sph_u64 h5 = SPH_C64(0xEABE394CA9D5C3F4);
-  sph_u64 h6 = SPH_C64(0x991112C71A75B523);
-  sph_u64 h7 = SPH_C64(0xAE18A40B660FCC33);
+  ulong t[3] = { 0x40UL, 0x7000000000000000UL, 0x7000000000000040UL },
+       t1[3] = { 0x50UL, 0xB000000000000000UL, 0xB000000000000050UL },
+       t2[3] = { 0x08UL, 0xFF00000000000000UL, 0xFF00000000000008UL };
 
-  // h8 = h0 ^ h1 ^ h2 ^ h3 ^ h4 ^ h5 ^ h6 ^ h7 ^ SPH_C64(0x1BD11BDAA9FC1A22);
-  sph_u64 h8 = SPH_C64(0xcab2076d98173ec4);
+  ulong8 p = Skein512Block(m, h, 0xCAB2076D98173EC4UL, t);
 
-  sph_u64 t0 = 64;
-  sph_u64 t1 = SPH_C64(0x7000000000000000);
-  sph_u64 t2 = SPH_C64(0x7000000000000040); // t0 ^ t1;
+  ulong8 h2 = m ^ p;
 
-  sph_u64 p0 = M0;
-  sph_u64 p1 = M1;
-  sph_u64 p2 = M2;
-  sph_u64 p3 = M3;
-  sph_u64 p4 = M4;
-  sph_u64 p5 = M5;
-  sph_u64 p6 = M6;
-  sph_u64 p7 = M7;
+  m = (ulong8)(block[8], (block[9] & 0x00000000FFFFFFFF) | ((ulong)SWAP4(gid) << 32), 0UL, 0UL, 0UL, 0UL, 0UL, 0UL);
+  ulong h8 = h2.s0 ^ h2.s1 ^ h2.s2 ^ h2.s3 ^ h2.s4 ^ h2.s5 ^ h2.s6 ^ h2.s7 ^ SKEIN_KS_PARITY;
 
-  TFBIG_4e(0);
-  TFBIG_4o(1);
-  TFBIG_4e(2);
-  TFBIG_4o(3);
-  TFBIG_4e(4);
-  TFBIG_4o(5);
-  TFBIG_4e(6);
-  TFBIG_4o(7);
-  TFBIG_4e(8);
-  TFBIG_4o(9);
-  TFBIG_4e(10);
-  TFBIG_4o(11);
-  TFBIG_4e(12);
-  TFBIG_4o(13);
-  TFBIG_4e(14);
-  TFBIG_4o(15);
-  TFBIG_4e(16);
-  TFBIG_4o(17);
-  TFBIG_ADDKEY(p0, p1, p2, p3, p4, p5, p6, p7, h, t, 18);
+  p = Skein512Block(m, h2, h8, t1);
 
-  h0 = M0 ^ p0;
-  h1 = M1 ^ p1;
-  h2 = M2 ^ p2;
-  h3 = M3 ^ p3;
-  h4 = M4 ^ p4;
-  h5 = M5 ^ p5;
-  h6 = M6 ^ p6;
-  h7 = M7 ^ p7;
+  h2 = m ^ p;
 
-  // second part with nonce
-  p0 = M8;
-  p1 = M9;
-  p2 = p3 = p4 = p5 = p6 = p7 = 0;
-  t0 = 80;
-  t1 = SPH_C64(0xB000000000000000);
-  t2 = SPH_C64(0xB000000000000050); // t0 ^ t1;
-  h8 = h0 ^ h1 ^ h2 ^ h3 ^ h4 ^ h5 ^ h6 ^ h7 ^ SPH_C64(0x1BD11BDAA9FC1A22);
+  p = (ulong8)(0);
+  h8 = h2.s0 ^ h2.s1 ^ h2.s2 ^ h2.s3 ^ h2.s4 ^ h2.s5 ^ h2.s6 ^ h2.s7 ^ SKEIN_KS_PARITY;
 
-  TFBIG_4e(0);
-  TFBIG_4o(1);
-  TFBIG_4e(2);
-  TFBIG_4o(3);
-  TFBIG_4e(4);
-  TFBIG_4o(5);
-  TFBIG_4e(6);
-  TFBIG_4o(7);
-  TFBIG_4e(8);
-  TFBIG_4o(9);
-  TFBIG_4e(10);
-  TFBIG_4o(11);
-  TFBIG_4e(12);
-  TFBIG_4o(13);
-  TFBIG_4e(14);
-  TFBIG_4o(15);
-  TFBIG_4e(16);
-  TFBIG_4o(17);
-  TFBIG_ADDKEY(p0, p1, p2, p3, p4, p5, p6, p7, h, t, 18);
-  h0 = p0 ^ M8;
-  h1 = p1 ^ M9;
-  h2 = p2;
-  h3 = p3;
-  h4 = p4;
-  h5 = p5;
-  h6 = p6;
-  h7 = p7;
+  p = Skein512Block(p, h2, h8, t2);
 
-  // close
-  t0 = 8;
-  t1 = SPH_C64(0xFF00000000000000);
-  t2 = SPH_C64(0xFF00000000000008); // t0 ^ t1;
-  h8 = h0 ^ h1 ^ h2 ^ h3 ^ h4 ^ h5 ^ h6 ^ h7 ^ SPH_C64(0x1BD11BDAA9FC1A22);
+  vstore8(p, 0, hash->h8);
 
-  p0 = p1 = p2 = p3 = p4 = p5 = p6 = p7 = 0;
-
-  TFBIG_4e(0);
-  TFBIG_4o(1);
-  TFBIG_4e(2);
-  TFBIG_4o(3);
-  TFBIG_4e(4);
-  TFBIG_4o(5);
-  TFBIG_4e(6);
-  TFBIG_4o(7);
-  TFBIG_4e(8);
-  TFBIG_4o(9);
-  TFBIG_4e(10);
-  TFBIG_4o(11);
-  TFBIG_4e(12);
-  TFBIG_4o(13);
-  TFBIG_4e(14);
-  TFBIG_4o(15);
-  TFBIG_4e(16);
-  TFBIG_4o(17);
-  TFBIG_ADDKEY(p0, p1, p2, p3, p4, p5, p6, p7, h, t, 18);
-
-  hash->h8[0] = p0;
-  hash->h8[1] = p1;
-  hash->h8[2] = p2;
-  hash->h8[3] = p3;
-  hash->h8[4] = p4;
-  hash->h8[5] = p5;
-  hash->h8[6] = p6;
-  hash->h8[7] = p7;
-
-  barrier(CLK_GLOBAL_MEM_FENCE);
+  mem_fence(CLK_GLOBAL_MEM_FENCE);
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
@@ -253,52 +151,169 @@ __kernel void search1(__global hash_t* hashes)
 
   // jh
 
-  sph_u64 h0h = C64e(0x6fd14b963e00aa17), h0l = C64e(0x636a2e057a15d543), h1h = C64e(0x8a225e8d0c97ef0b), h1l = C64e(0xe9341259f2b3c361), h2h = C64e(0x891da0c1536f801e), h2l = C64e(0x2aa9056bea2b6d80), h3h = C64e(0x588eccdb2075baa6), h3l = C64e(0xa90f3a76baf83bf7);
-  sph_u64 h4h = C64e(0x0169e60541e34a69), h4l = C64e(0x46b58a8e2e6fe65a), h5h = C64e(0x1047a7d0c1843c24), h5l = C64e(0x3b6e71b12d5ac199), h6h = C64e(0xcf57f6ec9db1f856), h6l = C64e(0xa706887c5716b156), h7h = C64e(0xe3c2fcdfe68517fb), h7l = C64e(0x545a4678cc8cdd4b);
-  sph_u64 tmp;
+  JH_CHUNK_TYPE evnhi = (JH_CHUNK_TYPE)(JH_BASE_TYPE_CAST(0x17AA003E964BD16FUL), JH_BASE_TYPE_CAST(0x1E806F53C1A01D89UL), JH_BASE_TYPE_CAST(0x694AE34105E66901UL), JH_BASE_TYPE_CAST(0x56F8B19DECF657CFUL));
+  JH_CHUNK_TYPE evnlo = (JH_CHUNK_TYPE)(JH_BASE_TYPE_CAST(0x43D5157A052E6A63UL), JH_BASE_TYPE_CAST(0x806D2BEA6B05A92AUL), JH_BASE_TYPE_CAST(0x5AE66F2E8E8AB546UL), JH_BASE_TYPE_CAST(0x56B116577C8806A7UL));
+  JH_CHUNK_TYPE oddhi = (JH_CHUNK_TYPE)(JH_BASE_TYPE_CAST(0x0BEF970C8D5E228AUL), JH_BASE_TYPE_CAST(0xA6BA7520DBCC8E58UL), JH_BASE_TYPE_CAST(0x243C84C1D0A74710UL), JH_BASE_TYPE_CAST(0xFB1785E6DFFCC2E3UL));
+  JH_CHUNK_TYPE oddlo = (JH_CHUNK_TYPE)(JH_BASE_TYPE_CAST(0x61C3B3F2591234E9UL), JH_BASE_TYPE_CAST(0xF73BF8BA763A0FA9UL), JH_BASE_TYPE_CAST(0x99C15A2DB1716E3BUL), JH_BASE_TYPE_CAST(0x4BDD8CCC78465A54UL));
 
-  for(int i = 0; i < 2; i++)
+  #ifdef WOLF_JH_64BIT
+
+  evnhi.s0 ^= JH_BASE_TYPE_CAST(hash->h8[0]);
+  evnlo.s0 ^= JH_BASE_TYPE_CAST(hash->h8[1]);
+  oddhi.s0 ^= JH_BASE_TYPE_CAST(hash->h8[2]);
+  oddlo.s0 ^= JH_BASE_TYPE_CAST(hash->h8[3]);
+  evnhi.s1 ^= JH_BASE_TYPE_CAST(hash->h8[4]);
+  evnlo.s1 ^= JH_BASE_TYPE_CAST(hash->h8[5]);
+  oddhi.s1 ^= JH_BASE_TYPE_CAST(hash->h8[6]);
+  oddlo.s1 ^= JH_BASE_TYPE_CAST(hash->h8[7]);
+
+  #else
+
+  evnhi.lo.lo ^= JH_BASE_TYPE_CAST(hash->h8[0]);
+  evnlo.lo.lo ^= JH_BASE_TYPE_CAST(hash->h8[1]);
+  oddhi.lo.lo ^= JH_BASE_TYPE_CAST(hash->h8[2]);
+  oddlo.lo.lo ^= JH_BASE_TYPE_CAST(hash->h8[3]);
+  evnhi.lo.hi ^= JH_BASE_TYPE_CAST(hash->h8[4]);
+  evnlo.lo.hi ^= JH_BASE_TYPE_CAST(hash->h8[5]);
+  oddhi.lo.hi ^= JH_BASE_TYPE_CAST(hash->h8[6]);
+  oddlo.lo.hi ^= JH_BASE_TYPE_CAST(hash->h8[7]);
+
+  #endif
+
+  for(bool flag = false;; flag++)
   {
-  if (i == 0)
-  {
-    h0h ^= (hash->h8[0]);
-    h0l ^= (hash->h8[1]);
-    h1h ^= (hash->h8[2]);
-    h1l ^= (hash->h8[3]);
-    h2h ^= (hash->h8[4]);
-    h2l ^= (hash->h8[5]);
-    h3h ^= (hash->h8[6]);
-    h3l ^= (hash->h8[7]);
-  }
-  else if(i == 1)
-  {
-    h4h ^= (hash->h8[0]);
-    h4l ^= (hash->h8[1]);
-    h5h ^= (hash->h8[2]);
-    h5l ^= (hash->h8[3]);
-    h6h ^= (hash->h8[4]);
-    h6l ^= (hash->h8[5]);
-    h7h ^= (hash->h8[6]);
-    h7l ^= (hash->h8[7]);
+    #pragma unroll
+    for(int r = 0; r < 6; ++r)
+    {
+      evnhi = Sb(evnhi, Ceven_hi((r * 7) + 0));
+      evnlo = Sb(evnlo, Ceven_lo((r * 7) + 0));
+      oddhi = Sb(oddhi, Codd_hi((r * 7) + 0));
+      oddlo = Sb(oddlo, Codd_lo((r * 7) + 0));
 
-    h0h ^= 0x80;
-    h3l ^= 0x2000000000000;
-  }
-  E8;
-  }
-  h4h ^= 0x80;
-  h7l ^= 0x2000000000000;
+      Lb(&evnhi, &oddhi);
+      Lb(&evnlo, &oddlo);
 
-  hash->h8[0] = (h4h);
-  hash->h8[1] = (h4l);
-  hash->h8[2] = (h5h);
-  hash->h8[3] = (h5l);
-  hash->h8[4] = (h6h);
-  hash->h8[5] = (h6l);
-  hash->h8[6] = (h7h);
-  hash->h8[7] = (h7l);
+      JH_RND(&oddhi, &oddlo, 0);
 
-  barrier(CLK_GLOBAL_MEM_FENCE);
+      evnhi = Sb(evnhi, Ceven_hi((r * 7) + 1));
+      evnlo = Sb(evnlo, Ceven_lo((r * 7) + 1));
+      oddhi = Sb(oddhi, Codd_hi((r * 7) + 1));
+      oddlo = Sb(oddlo, Codd_lo((r * 7) + 1));
+      Lb(&evnhi, &oddhi);
+      Lb(&evnlo, &oddlo);
+
+      JH_RND(&oddhi, &oddlo, 1);
+
+      evnhi = Sb(evnhi, Ceven_hi((r * 7) + 2));
+      evnlo = Sb(evnlo, Ceven_lo((r * 7) + 2));
+      oddhi = Sb(oddhi, Codd_hi((r * 7) + 2));
+      oddlo = Sb(oddlo, Codd_lo((r * 7) + 2));
+      Lb(&evnhi, &oddhi);
+      Lb(&evnlo, &oddlo);
+
+      JH_RND(&oddhi, &oddlo, 2);
+
+      evnhi = Sb(evnhi, Ceven_hi((r * 7) + 3));
+      evnlo = Sb(evnlo, Ceven_lo((r * 7) + 3));
+      oddhi = Sb(oddhi, Codd_hi((r * 7) + 3));
+      oddlo = Sb(oddlo, Codd_lo((r * 7) + 3));
+      Lb(&evnhi, &oddhi);
+      Lb(&evnlo, &oddlo);
+
+      JH_RND(&oddhi, &oddlo, 3);
+
+      evnhi = Sb(evnhi, Ceven_hi((r * 7) + 4));
+      evnlo = Sb(evnlo, Ceven_lo((r * 7) + 4));
+      oddhi = Sb(oddhi, Codd_hi((r * 7) + 4));
+      oddlo = Sb(oddlo, Codd_lo((r * 7) + 4));
+      Lb(&evnhi, &oddhi);
+      Lb(&evnlo, &oddlo);
+
+      JH_RND(&oddhi, &oddlo, 4);
+
+      evnhi = Sb(evnhi, Ceven_hi((r * 7) + 5));
+      evnlo = Sb(evnlo, Ceven_lo((r * 7) + 5));
+      oddhi = Sb(oddhi, Codd_hi((r * 7) + 5));
+      oddlo = Sb(oddlo, Codd_lo((r * 7) + 5));
+      Lb(&evnhi, &oddhi);
+      Lb(&evnlo, &oddlo);
+
+      JH_RND(&oddhi, &oddlo, 5);
+
+      evnhi = Sb(evnhi, Ceven_hi((r * 7) + 6));
+      evnlo = Sb(evnlo, Ceven_lo((r * 7) + 6));
+      oddhi = Sb(oddhi, Codd_hi((r * 7) + 6));
+      oddlo = Sb(oddlo, Codd_lo((r * 7) + 6));
+      Lb(&evnhi, &oddhi);
+      Lb(&evnlo, &oddlo);
+
+      JH_RND(&oddhi, &oddlo, 6);
+    }
+
+    if(flag) break;
+
+    #ifdef WOLF_JH_64BIT
+
+    evnhi.s2 ^= JH_BASE_TYPE_CAST(hash->h8[0]);
+    evnlo.s2 ^= JH_BASE_TYPE_CAST(hash->h8[1]);
+    oddhi.s2 ^= JH_BASE_TYPE_CAST(hash->h8[2]);
+    oddlo.s2 ^= JH_BASE_TYPE_CAST(hash->h8[3]);
+    evnhi.s3 ^= JH_BASE_TYPE_CAST(hash->h8[4]);
+    evnlo.s3 ^= JH_BASE_TYPE_CAST(hash->h8[5]);
+    oddhi.s3 ^= JH_BASE_TYPE_CAST(hash->h8[6]);
+    oddlo.s3 ^= JH_BASE_TYPE_CAST(hash->h8[7]);
+
+    evnhi.s0 ^= JH_BASE_TYPE_CAST(0x80UL);
+    oddlo.s1 ^= JH_BASE_TYPE_CAST(0x0002000000000000UL);
+
+    #else
+
+    evnhi.hi.lo ^= JH_BASE_TYPE_CAST(hash->h8[0]);
+    evnlo.hi.lo ^= JH_BASE_TYPE_CAST(hash->h8[1]);
+    oddhi.hi.lo ^= JH_BASE_TYPE_CAST(hash->h8[2]);
+    oddlo.hi.lo ^= JH_BASE_TYPE_CAST(hash->h8[3]);
+    evnhi.hi.hi ^= JH_BASE_TYPE_CAST(hash->h8[4]);
+    evnlo.hi.hi ^= JH_BASE_TYPE_CAST(hash->h8[5]);
+    oddhi.hi.hi ^= JH_BASE_TYPE_CAST(hash->h8[6]);
+    oddlo.hi.hi ^= JH_BASE_TYPE_CAST(hash->h8[7]);
+
+    evnhi.lo.lo ^= JH_BASE_TYPE_CAST(0x80UL);
+    oddlo.lo.hi ^= JH_BASE_TYPE_CAST(0x0002000000000000UL);
+
+    #endif
+  }
+
+  #ifdef WOLF_JH_64BIT
+
+  evnhi.s2 ^= JH_BASE_TYPE_CAST(0x80UL);
+  oddlo.s3 ^= JH_BASE_TYPE_CAST(0x2000000000000UL);
+
+  hash->h8[0] = as_ulong(evnhi.s2);
+  hash->h8[1] = as_ulong(evnlo.s2);
+  hash->h8[2] = as_ulong(oddhi.s2);
+  hash->h8[3] = as_ulong(oddlo.s2);
+  hash->h8[4] = as_ulong(evnhi.s3);
+  hash->h8[5] = as_ulong(evnlo.s3);
+  hash->h8[6] = as_ulong(oddhi.s3);
+  hash->h8[7] = as_ulong(oddlo.s3);
+
+  #else
+
+  evnhi.hi.lo ^= JH_BASE_TYPE_CAST(0x80UL);
+  oddlo.hi.hi ^= JH_BASE_TYPE_CAST(0x2000000000000UL);
+
+  hash->h8[0] = as_ulong(evnhi.hi.lo);
+  hash->h8[1] = as_ulong(evnlo.hi.lo);
+  hash->h8[2] = as_ulong(oddhi.hi.lo);
+  hash->h8[3] = as_ulong(oddlo.hi.lo);
+  hash->h8[4] = as_ulong(evnhi.hi.hi);
+  hash->h8[5] = as_ulong(evnlo.hi.hi);
+  hash->h8[6] = as_ulong(oddhi.hi.hi);
+  hash->h8[7] = as_ulong(oddlo.hi.hi);
+
+  #endif
+
+  mem_fence(CLK_GLOBAL_MEM_FENCE);
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
@@ -309,63 +324,37 @@ __kernel void search2(__global hash_t* hashes)
 
   // cubehash.h1
 
-  sph_u32 x0 = SPH_C32(0x2AEA2A61), x1 = SPH_C32(0x50F494D4), x2 = SPH_C32(0x2D538B8B), x3 = SPH_C32(0x4167D83E);
-  sph_u32 x4 = SPH_C32(0x3FEE2313), x5 = SPH_C32(0xC701CF8C), x6 = SPH_C32(0xCC39968E), x7 = SPH_C32(0x50AC5695);
-  sph_u32 x8 = SPH_C32(0x4D42C787), x9 = SPH_C32(0xA647A8B3), xa = SPH_C32(0x97CF0BEF), xb = SPH_C32(0x825B4537);
-  sph_u32 xc = SPH_C32(0xEEF864D2), xd = SPH_C32(0xF22090C4), xe = SPH_C32(0xD0E5CD33), xf = SPH_C32(0xA23911AE);
-  sph_u32 xg = SPH_C32(0xFCD398D9), xh = SPH_C32(0x148FE485), xi = SPH_C32(0x1B017BEF), xj = SPH_C32(0xB6444532);
-  sph_u32 xk = SPH_C32(0x6A536159), xl = SPH_C32(0x2FF5781C), xm = SPH_C32(0x91FA7934), xn = SPH_C32(0x0DBADEA9);
-  sph_u32 xo = SPH_C32(0xD65C8A2B), xp = SPH_C32(0xA5A70E75), xq = SPH_C32(0xB1C62456), xr = SPH_C32(0xBC796576);
-  sph_u32 xs = SPH_C32(0x1921C8F7), xt = SPH_C32(0xE7989AF1), xu = SPH_C32(0x7795D246), xv = SPH_C32(0xD43E3B44);
+  uint state[32] = {   0x2AEA2A61U, 0x50F494D4U, 0x2D538B8BU, 0x4167D83EU, 0x3FEE2313U, 0xC701CF8CU,
+            0xCC39968EU, 0x50AC5695U, 0x4D42C787U, 0xA647A8B3U, 0x97CF0BEFU, 0x825B4537U,
+            0xEEF864D2U, 0xF22090C4U, 0xD0E5CD33U, 0xA23911AEU, 0xFCD398D9U, 0x148FE485U,
+            0x1B017BEFU, 0xB6444532U, 0x6A536159U, 0x2FF5781CU, 0x91FA7934U, 0x0DBADEA9U,
+            0xD65C8A2BU, 0xA5A70E75U, 0xB1C62456U, 0xBC796576U, 0x1921C8F7U, 0xE7989AF1U, 
+            0x7795D246U, 0xD43E3B44U };
 
-  x0 ^= (hash->h4[0]);
-  x1 ^= (hash->h4[1]);
-  x2 ^= (hash->h4[2]);
-  x3 ^= (hash->h4[3]);
-  x4 ^= (hash->h4[4]);
-  x5 ^= (hash->h4[5]);
-  x6 ^= (hash->h4[6]);
-  x7 ^= (hash->h4[7]);
+  ((ulong4 *)state)[0] ^= vload4(0, hash->h8);
+  ulong4 xor = vload4(1, hash->h8);
 
-  for (int i = 0; i < 13; i ++)
+  #pragma unroll 2
+  for(int i = 0; i < 14; ++i)
   {
-  SIXTEEN_ROUNDS;
+    #pragma unroll 4
+    for(int x = 0; x < 8; ++x)
+    {
+      CubeHashEvenRound(state);
+      CubeHashOddRound(state);
+    }
 
-  if (i == 0)
-  {
-    x0 ^= (hash->h4[8]);
-    x1 ^= (hash->h4[9]);
-    x2 ^= (hash->h4[10]);
-    x3 ^= (hash->h4[11]);
-    x4 ^= (hash->h4[12]);
-    x5 ^= (hash->h4[13]);
-    x6 ^= (hash->h4[14]);
-    x7 ^= (hash->h4[15]);
-  }
-  else if(i == 1)
-    x0 ^= 0x80;
-  else if (i == 2)
-    xv ^= SPH_C32(1);
+    if(i == 12)
+    {
+      vstore8(((ulong8 *)state)[0], 0, hash->h8);
+      break;
+    }
+    if(!i) ((ulong4 *)state)[0] ^= xor;
+    state[0] ^= (i == 1) ? 0x80 : 0;
+    state[31] ^= (i == 2) ? 1 : 0;
   }
 
-  hash->h4[0] = x0;
-  hash->h4[1] = x1;
-  hash->h4[2] = x2;
-  hash->h4[3] = x3;
-  hash->h4[4] = x4;
-  hash->h4[5] = x5;
-  hash->h4[6] = x6;
-  hash->h4[7] = x7;
-  hash->h4[8] = x8;
-  hash->h4[9] = x9;
-  hash->h4[10] = xa;
-  hash->h4[11] = xb;
-  hash->h4[12] = xc;
-  hash->h4[13] = xd;
-  hash->h4[14] = xe;
-  hash->h4[15] = xf;
-
-  barrier(CLK_GLOBAL_MEM_FENCE);
+  mem_fence(CLK_GLOBAL_MEM_FENCE);
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
@@ -382,94 +371,149 @@ __kernel void search3(__global hash_t* hashes)
   for (int i = init; i < 256; i += step)
   {
     mixtab0[i] = mixtab0_c[i];
-    mixtab1[i] = mixtab1_c[i];
-    mixtab2[i] = mixtab2_c[i];
-    mixtab3[i] = mixtab3_c[i];
+    mixtab1[i] = rotate(mixtab0_c[i], 24U);
+    mixtab2[i] = rotate(mixtab0_c[i], 16U);
+    mixtab3[i] = rotate(mixtab0_c[i], 8U);
   }
+  // ha ez nincs akkor hibasan szamol
   barrier(CLK_LOCAL_MEM_FENCE);
 
   // fugue
-  sph_u32 S00, S01, S02, S03, S04, S05, S06, S07, S08, S09;
-  sph_u32 S10, S11, S12, S13, S14, S15, S16, S17, S18, S19;
-  sph_u32 S20, S21, S22, S23, S24, S25, S26, S27, S28, S29;
-  sph_u32 S30, S31, S32, S33, S34, S35;
 
-  ulong fc_bit_count = (sph_u64) 64 << 3;
+  uint4 S[9] = { 0 };
 
-  S00 = S01 = S02 = S03 = S04 = S05 = S06 = S07 = S08 = S09 = S10 = S11 = S12 = S13 = S14 = S15 = S16 = S17 = S18 = S19 = 0;
-  S20 = SPH_C32(0x8807a57e); S21 = SPH_C32(0xe616af75); S22 = SPH_C32(0xc5d3e4db); S23 = SPH_C32(0xac9ab027);
-  S24 = SPH_C32(0xd915f117); S25 = SPH_C32(0xb6eecc54); S26 = SPH_C32(0x06e8020b); S27 = SPH_C32(0x4a92efd1);
-  S28 = SPH_C32(0xaac6e2c9); S29 = SPH_C32(0xddb21398); S30 = SPH_C32(0xcae65838); S31 = SPH_C32(0x437f203f);
-  S32 = SPH_C32(0x25ea78e7); S33 = SPH_C32(0x951fddd6); S34 = SPH_C32(0xda6ed11d); S35 = SPH_C32(0xe13e3567);
+  S[5] = vload4(0, IV512);
+  S[6] = vload4(1, IV512);
+  S[7] = vload4(2, IV512);
+  S[8] = vload4(3, IV512);
 
-  FUGUE512_3(SWAP4(hash->h4[0x0]), SWAP4(hash->h4[0x1]), SWAP4(hash->h4[0x2]));
-  FUGUE512_3(SWAP4(hash->h4[0x3]), SWAP4(hash->h4[0x4]), SWAP4(hash->h4[0x5]));
-  FUGUE512_3(SWAP4(hash->h4[0x6]), SWAP4(hash->h4[0x7]), SWAP4(hash->h4[0x8]));
-  FUGUE512_3(SWAP4(hash->h4[0x9]), SWAP4(hash->h4[0xA]), SWAP4(hash->h4[0xB]));
-  FUGUE512_3(SWAP4(hash->h4[0xC]), SWAP4(hash->h4[0xD]), SWAP4(hash->h4[0xE]));
-  FUGUE512_3(SWAP4(hash->h4[0xF]), as_uint2(fc_bit_count).y, as_uint2(fc_bit_count).x);
+  uint input[18];
+  ((uint16 *)input)[0] = VSWAP4(vload16(0, hash->h4));
+  input[16] = 0;
+  input[17] = 0x200;
 
-  // apply round shift if necessary
-  int i;
+  mem_fence(CLK_LOCAL_MEM_FENCE);
 
-  for (i = 0; i < 32; i ++)
+  #pragma unroll
+  for(int i = 0; i < 19; ++i)
   {
-    ROR3;
-    CMIX36(S00, S01, S02, S04, S05, S06, S18, S19, S20);
-    SMIX(S00, S01, S02, S03);
+    if(i < 18) TIX4(input[i], S[0].s0, S[0].s1, S[1].s0, S[1].s3, S[2].s0, S[5].s2, S[6].s0, S[6].s3, S[7].s2);
+
+    for(int x = 0; x < 8; ++x)
+    {
+      ROR3;
+      CMIX36(S[0].s0, S[0].s1, S[0].s2, S[1].s0, S[1].s1, S[1].s2, S[4].s2, S[4].s3, S[5].s0);
+      SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+      ROR3;
+      CMIX36(S[0].s0, S[0].s1, S[0].s2, S[1].s0, S[1].s1, S[1].s2, S[4].s2, S[4].s3, S[5].s0);
+      SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+      ROR3;
+      CMIX36(S[0].s0, S[0].s1, S[0].s2, S[1].s0, S[1].s1, S[1].s2, S[4].s2, S[4].s3, S[5].s0);
+      SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+      ROR3;
+      CMIX36(S[0].s0, S[0].s1, S[0].s2, S[1].s0, S[1].s1, S[1].s2, S[4].s2, S[4].s3, S[5].s0);
+      SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+      if(i != 18) break;
+    }
   }
 
-  for (i = 0; i < 13; i ++)
+  #pragma unroll 4
+  for(int i = 0; i < 12; ++i)
   {
-    S04 ^= S00;
-    S09 ^= S00;
-    S18 ^= S00;
-    S27 ^= S00;
+    S[1].s0 ^= S[0].s0;
+    S[2].s1 ^= S[0].s0;
+    S[4].s2 ^= S[0].s0;
+    S[6].s3 ^= S[0].s0;
+
     ROR9;
-    SMIX(S00, S01, S02, S03);
-    S04 ^= S00;
-    S10 ^= S00;
-    S18 ^= S00;
-    S27 ^= S00;
+    SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+    S[1].s0 ^= S[0].s0;
+    S[2].s2 ^= S[0].s0;
+    S[4].s2 ^= S[0].s0;
+    S[6].s3 ^= S[0].s0;
+
     ROR9;
-    SMIX(S00, S01, S02, S03);
-    S04 ^= S00;
-    S10 ^= S00;
-    S19 ^= S00;
-    S27 ^= S00;
+    SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+    S[1].s0 ^= S[0].s0;
+    S[2].s2 ^= S[0].s0;
+    S[4].s3 ^= S[0].s0;
+    S[6].s3 ^= S[0].s0;
+
     ROR9;
-    SMIX(S00, S01, S02, S03);
-    S04 ^= S00;
-    S10 ^= S00;
-    S19 ^= S00;
-    S28 ^= S00;
+    SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+    S[1].s0 ^= S[0].s0;
+    S[2].s2 ^= S[0].s0;
+    S[4].s3 ^= S[0].s0;
+    S[7].s0 ^= S[0].s0;
+
     ROR8;
-    SMIX(S00, S01, S02, S03);
+    SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
   }
 
-  S04 ^= S00;
-  S09 ^= S00;
-  S18 ^= S00;
-  S27 ^= S00;
+  S[1].s0 ^= S[0].s0;
+  S[2].s1 ^= S[0].s0;
+  S[4].s2 ^= S[0].s0;
+  S[6].s3 ^= S[0].s0;
 
-  hash->h4[0] = SWAP4(S01);
-  hash->h4[1] = SWAP4(S02);
-  hash->h4[2] = SWAP4(S03);
-  hash->h4[3] = SWAP4(S04);
-  hash->h4[4] = SWAP4(S09);
-  hash->h4[5] = SWAP4(S10);
-  hash->h4[6] = SWAP4(S11);
-  hash->h4[7] = SWAP4(S12);
-  hash->h4[8] = SWAP4(S18);
-  hash->h4[9] = SWAP4(S19);
-  hash->h4[10] = SWAP4(S20);
-  hash->h4[11] = SWAP4(S21);
-  hash->h4[12] = SWAP4(S27);
-  hash->h4[13] = SWAP4(S28);
-  hash->h4[14] = SWAP4(S29);
-  hash->h4[15] = SWAP4(S30);
+  ROR9;
+  SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
 
-  barrier(CLK_GLOBAL_MEM_FENCE);
+  S[1].s0 ^= S[0].s0;
+  S[2].s2 ^= S[0].s0;
+  S[4].s2 ^= S[0].s0;
+  S[6].s3 ^= S[0].s0;
+
+  ROR9;
+  SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+  S[1].s0 ^= S[0].s0;
+  S[2].s2 ^= S[0].s0;
+  S[4].s3 ^= S[0].s0;
+  S[6].s3 ^= S[0].s0;
+
+  ROR9;
+  SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+  S[1].s0 ^= S[0].s0;
+  S[2].s2 ^= S[0].s0;
+  S[4].s3 ^= S[0].s0;
+  S[7].s0 ^= S[0].s0;
+
+  ROR8;
+  SMIX(mixtab0, mixtab1, mixtab2, mixtab3, &S[0]);
+
+  S[1].s0 ^= S[0].s0;
+  S[2].s1 ^= S[0].s0;
+  S[4].s2 ^= S[0].s0;
+  S[6].s3 ^= S[0].s0;
+
+  hash->h4[0] = SWAP4(S[0].s1);
+  hash->h4[1] = SWAP4(S[0].s2);
+  hash->h4[2] = SWAP4(S[0].s3);
+  hash->h4[3] = SWAP4(S[1].s0);
+  hash->h4[4] = SWAP4(S[2].s1);
+  hash->h4[5] = SWAP4(S[2].s2);
+  hash->h4[6] = SWAP4(S[2].s3);
+  hash->h4[7] = SWAP4(S[3].s0);
+  hash->h4[8] = SWAP4(S[4].s2);
+  hash->h4[9] = SWAP4(S[4].s3);
+  hash->h4[10] = SWAP4(S[5].s0);
+  hash->h4[11] = SWAP4(S[5].s1);
+  hash->h4[12] = SWAP4(S[6].s3);
+  hash->h4[13] = SWAP4(S[7].s0);
+  hash->h4[14] = SWAP4(S[7].s1);
+  hash->h4[15] = SWAP4(S[7].s2);
+
+  mem_fence(CLK_GLOBAL_MEM_FENCE);
+
+//  barrier(CLK_GLOBAL_MEM_FENCE);
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
@@ -524,80 +568,43 @@ __kernel void search5(__global hash_t* hashes, __global uint* output, const ulon
   uint gid = get_global_id(0);
   __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
 
-  __local sph_u32 AES0[256], AES1[256], AES2[256], AES3[256];
+  __local uint AES0[256];
 
-  int init = get_local_id(0);
-  int step = get_local_size(0);
+  const uint step = get_local_size(0);
 
-  for (int i = init; i < 256; i += step)
-  {
-    AES0[i] = AES0_C[i];
-    AES1[i] = AES1_C[i];
-    AES2[i] = AES2_C[i];
-    AES3[i] = AES3_C[i];
-  }
+  AES0[get_local_id(0)] = AES0_C[get_local_id(0)];
+  AES0[get_local_id(0) + 64] = AES0_C[get_local_id(0) + 64];
+  AES0[get_local_id(0) + 128] = AES0_C[get_local_id(0) + 128];
+  AES0[get_local_id(0) + 192] = AES0_C[get_local_id(0) + 192];
+  // ez is kellett ide, kulonben szart csinal
   barrier(CLK_LOCAL_MEM_FENCE);
 
-  // copies hashes to "hash"
   // echo
-  sph_u64 W00, W01, W10, W11, W20, W21, W30, W31, W40, W41, W50, W51, W60, W61, W70, W71, W80, W81, W90, W91, WA0, WA1, WB0, WB1, WC0, WC1, WD0, WD1, WE0, WE1, WF0, WF1;
-  sph_u64 Vb00, Vb01, Vb10, Vb11, Vb20, Vb21, Vb30, Vb31, Vb40, Vb41, Vb50, Vb51, Vb60, Vb61, Vb70, Vb71;
-  Vb00 = Vb10 = Vb20 = Vb30 = Vb40 = Vb50 = Vb60 = Vb70 = 512UL;
-  Vb01 = Vb11 = Vb21 = Vb31 = Vb41 = Vb51 = Vb61 = Vb71 = 0;
+  uint4 W[16];
 
-  sph_u32 K0 = 512;
-  sph_u32 K1 = 0;
-  sph_u32 K2 = 0;
-  sph_u32 K3 = 0;
+  #pragma unroll
+  for(int i = 0; i < 8; ++i) W[i] = (uint4)(512, 0, 0, 0);
 
-  W00 = Vb00;
-  W01 = Vb01;
-  W10 = Vb10;
-  W11 = Vb11;
-  W20 = Vb20;
-  W21 = Vb21;
-  W30 = Vb30;
-  W31 = Vb31;
-  W40 = Vb40;
-  W41 = Vb41;
-  W50 = Vb50;
-  W51 = Vb51;
-  W60 = Vb60;
-  W61 = Vb61;
-  W70 = Vb70;
-  W71 = Vb71;
-  W80 = hash->h8[0];
-  W81 = hash->h8[1];
-  W90 = hash->h8[2];
-  W91 = hash->h8[3];
-  WA0 = hash->h8[4];
-  WA1 = hash->h8[5];
-  WB0 = hash->h8[6];
-  WB1 = hash->h8[7];
-  WC0 = 0x80;
-  WC1 = 0;
-  WD0 = 0;
-  WD1 = 0;
-  WE0 = 0;
-  WE1 = 0x200000000000000;
-  WF0 = 0x200;
-  WF1 = 0;
+  ((uint16 *)W)[2] = vload16(0, hash->h4);
 
-  for (unsigned u = 0; u < 10; u ++)
-  BIG_ROUND;
+  W[12] = (uint4)(0x80, 0, 0, 0);
+  W[13] = (uint4)(0, 0, 0, 0);
+  W[14] = (uint4)(0, 0, 0, 0x02000000);
+  W[15] = (uint4)(512, 0, 0, 0);
 
-  Vb00 ^= hash->h8[0] ^ W00 ^ W80;
-  Vb01 ^= hash->h8[1] ^ W01 ^ W81;
-  Vb10 ^= hash->h8[2] ^ W10 ^ W90;
-  Vb11 ^= hash->h8[3] ^ W11 ^ W91;
-  Vb20 ^= hash->h8[4] ^ W20 ^ WA0;
-  Vb21 ^= hash->h8[5] ^ W21 ^ WA1;
-  Vb30 ^= hash->h8[6] ^ W30 ^ WB0;
-  Vb31 ^= hash->h8[7] ^ W31 ^ WB1;
+  mem_fence(CLK_LOCAL_MEM_FENCE);
 
-  barrier(CLK_GLOBAL_MEM_FENCE);
+  #pragma unroll 1
+  for(uchar i = 0; i < 10; ++i)
+  {
+    BigSubBytesSmall(AES0, W, i);
+    BigShiftRows(W);
+    BigMixColumns(W);
+  }
 
-  bool result = (Vb11 <= target);
+  vstore4(vload4(1, hash->h4) ^ W[1] ^ W[9] ^ (uint4)(512, 0, 0, 0), 1, hash->h4);
+
+  bool result = (hash->h8[3] <= target);
 
   if (result)
       output[atomic_inc(output+0xFF)] = gid;
